@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Путь героя (улучшенная версия)</title>
+<style>
+    body { margin: 0; overflow: hidden; background: #222; }
+    canvas { display: block; background: #87CEEB; }
+    #ui { position: absolute; top: 10px; left: 10px; color: white; font-family: sans-serif; }
+    
+    /* Стиль для надписи GAME OVER */
+    .game-over {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 100px;
+        color: red;
+        background-color: rgba(0, 0, 0, 0.7);
+        z-index: 100;
+        pointer-events: none; /* чтобы не мешало управлению */
+    }
+</style>
+</head>
+<body>
+<div id="ui">
+    <p>Артефакты: <span id="score">0</span></p>
+    <p>Жизни: <span id="lives">3</span></p>
+</div>
+
+<!-- Надпись GAME OVER -->
+<div id="gameOverScreen" class="game-over" style="display:none;">GAME OVER</div>
+
+<canvas id="gameCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // *** Автоматическое определение размера экрана ***
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // Константы для удобства
+    const MAX_JUMP_HEIGHT = 250; // максимальная высота прыжка
+    const PLATFORM_WIDTH = 100; // ширина платформы
+    const PLATFORM_HEIGHT = 20; // высота платформы
+
+    // *** ХИТБОКС персонажа (константные размеры) ***
+    const HERO_WIDTH = 60;
+    const HERO_HEIGHT = 90;
+
+    // Клавиатурные клавиши
+    const keys = {};
+    document.addEventListener('keydown', e => {
+        keys[e.code] = true;
+        
+        // Обрабатываем прыжок только при первом нажатии
+        if (e.code === 'Space' && !keys.SpaceWasPressed) {
+            keys.SpaceWasPressed = true;
+            handleJump();
+        }
+    });
+    
+    document.addEventListener('keyup', e => {
+        keys[e.code] = false;
+        
+        // Сбрасываем флаг нажатия пробела
+        if (e.code === 'Space') {
+            keys.SpaceWasPressed = false;
+        }
+    });
+
+    // Загрузка изображений
+    const heroImage = new Image();
+    heroImage.src = 'hero.png'; // одно изображение персонажа
+
+    const backgroundImage = new Image();
+    backgroundImage.src = 'background.jpeg'; // фон
+
+    // *** Добавим скин для платформы ***
+    const platformSkin = new Image();
+    platformSkin.src = 'platform-skin.png'; // изображение платформы
+
+    // Класс Героя (с движением и двойным прыжком)
+    class Hero {
+        constructor(x, y) {
+            this.x = x;
+            this.y = y;
+            this.width = 60; // увеличим ширину персонажа
+            this.height = 90; // увеличим высоту персонажа
+            this.speed = 6; // скорость перемещения
+            this.jumpPower = -20; // сила прыжка
+            this.vy = 0; // вертикальная скорость
+            this.onGround = false; // на земле ли персонаж
+            this.canDoubleJump = false; // флаг для двойного прыжка
+            this.glideMode = false; // флаг для парящего режима
+        }
+
+        update() {
+            // Движение влево-вправо
+            if (keys['ArrowLeft']) {
+                this.x -= this.speed;
+            }
+            if (keys['ArrowRight']) {
+                this.x += this.speed;
+            }
+
+            // Ограничиваем движение по краям экрана
+            this.x = Math.max(0, Math.min(canvas.width - this.width, this.x));
+
+            // Гравитация
+            if (!this.glideMode) {
+                this.vy += 1; // обычная гравитация
+            } else {
+                this.vy += 0.2; // медленное парение
+            }
+            this.y += this.vy;
+
+            // Проверка земли
+            if (this.y + this.height >= canvas.height) {
+                this.y = canvas.height - this.height;
+                this.onGround = true;
+                this.vy = 0;
+                this.glideMode = false; // выключаем парение
+                this.canDoubleJump = false; // сбрасываем флаг двойного прыжка
+            } else {
+                this.onGround = false;
+            }
+
+            // *** Новая логика взаимодействия с платформами ***
+            platforms.forEach(platform => {
+                // Проверка пересечения с платформой
+                if (
+                    this.x < platform.x + platform.width &&
+                    this.x + this.width > platform.x
+                ) {
+                    // Проверка верхней части платформы (стоять на ней)
+                    if (
+                        this.y + this.height <= platform.y &&
+                        this.y + this.height + this.vy > platform.y
+                    ) {
+                        this.y = platform.y - this.height;
+                        this.onGround = true;
+                        this.vy = 0;
+                        this.glideMode = false; // выключаем парение
+                        this.canDoubleJump = false; // сброс флага двойного прыжка
+                    }
+                    
+                    // Проверка нижних частей платформы (не проваливаться сквозь неё)
+                    if (
+                        this.y < platform.y + platform.height &&
+                        this.y + this.height > platform.y + platform.height
+                    ) {
+                        this.y = platform.y + platform.height;
+                        this.vy = 0;
+                        this.glideMode = false; // выключаем парение
+                    }
+                    
+                    // Проверка боковых частей платформы (не проходить сквозь неё)
+                    if (
+                        this.y + this.height > platform.y &&
+                        this.y < platform.y + platform.height
+                    ) {
+                        // Левая сторона платформы
+                        if (this.x + this.width > platform.x && this.x < platform.x) {
+                            this.x = platform.x - this.width;
+                        }
+                        
+                        // Правая сторона платформы
+                        if (this.x < platform.x + platform.width && this.x + this.width > platform.x + platform.width) {
+                            this.x = platform.x + platform.width;
+                        }
+                    }
+                    
+                    // *** Новое: эффект подбрасывания на 120 пикселей ***
+                    if (this.y + this.height > platform.y && this.y < platform.y + platform.height) {
+                        // Подбрасываем персонажа на 120 пикселей
+                        this.vy = -15; // резкий подъём
+                        this.glideMode = true; // включаем парение
+                    }
+                }
+            });
+        }
+
+        draw() {
+            ctx.drawImage(heroImage, this.x, this.y, this.width, this.height);
+        }
+    }
+
+    // Обработка прыжка
+    function handleJump() {
+        const hero = window.hero;
+        
+        if (hero.onGround) {
+            hero.vy = hero.jumpPower; // первый прыжок
+            hero.onGround = false;
+            hero.canDoubleJump = true; // разрешаем двойной прыжок
+        } else if (hero.canDoubleJump) {
+            hero.vy = hero.jumpPower; // второй прыжок
+            hero.canDoubleJump = false; // отключаем возможность повторного прыжка
+        }
+    }
+
+    // Класс врага (простая реализация)
+    class Enemy {
+        constructor(x, y) {
+            this.x = x;
+            this.y = y;
+            this.width = 60;
+            this.height = 90;
+            this.speed = 3; // постоянная скорость движения
+            this.direction = 1; // направление движения (-1 лево, 1 право)
+        }
+
+        update() {
+            // Постоянное движение туда-обратно
+            this.x += this.speed * this.direction;
+            
+            // Разворот при достижении края экрана
+            if (this.x + this.width > canvas.width || this.x < 0) {
+                this.direction *= -1;
+            }
+        }
+
+        draw() {
+            ctx.fillStyle = 'red';
+            ctx.fillRect(this.x, this.y, this.width, this.height);
+        }
+    }
+
+    // Класс артефакта (с появлением в случайных местах)
+    class Artifact {
+        constructor(x, y) {
+            this.x = x;
+            this.y = y;
+            this.width = 30;
+            this.height = 30;
+            this.collected = false;
+        }
+
+        // Появление в случайном месте
+        respawn() {
+            this.x = Math.random() * (canvas.width - this.width);
+            this.y = Math.random() * (canvas.height - this.height - 200) + 100; // чтобы не появлялся внизу
+            this.collected = false;
+            
+            // Генерируем ступеньку, если артефакт слишком высоко
+            generatePlatformForArtifact(this);
+        }
+
+        draw() {
+            if (!this.collected) {
+                ctx.fillStyle = 'gold';
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+            }
+        }
+    }
+
+    // Класс платформы (ступеньки)
+    class Platform {
+        constructor(x, y) {
+            this.x = x;
+            this.y = y;
+            this.width = PLATFORM_WIDTH;
+            this.height = PLATFORM_HEIGHT;
+        }
+
+        draw() {
+            // *** Использование скина для платформы ***
+            ctx.drawImage(platformSkin, this.x, this.y, this.width, this.height);
+        }
+    }
+
+    // Список платформ
+    const platforms = [];
+
+    // Генерация платформы под артефактом
+    function generatePlatformForArtifact(artifact) {
+        // Платформа всегда на высоте 120 пикселей от земли
+        const platformY = canvas.height - 120;
+        
+        // Центрирование платформы относительно артефакта
+        const platformX = artifact.x - PLATFORM_WIDTH / 2 + artifact.width / 2;
+        
+        // Создаем платформу
+        const platform = new Platform(platformX, platformY);
+        platforms.push(platform);
+    }
+
+    // Очистка старых платформ
+    function clearOldPlatforms() {
+        // Удаляем все существующие платформы
+        platforms.splice(0, platforms.length);
+    }
+
+    // Инициализация игры
+    const hero = new Hero(100, canvas.height - 150); // герой на старте
+    window.hero = hero; // сохраним ссылку для функции прыжка
+
+    // Несколько врагов
+    const enemies = [
+        new Enemy(300, canvas.height - 180),
+        new Enemy(700, canvas.height - 180)
+    ];
+
+    // Один артефакт (будет появляться в случайных местах)
+    const artifact = new Artifact(Math.random() * (canvas.width - 30), canvas.height - 200);
+
+    // Счётчики
+    let score = 0;
+    let lives = 3;
+
+    // Интерфейс
+    function updateUI() {
+        document.getElementById('score').textContent = score;
+        document.getElementById('lives').textContent = lives;
+    }
+
+    // Рисуем фон
+    function drawBackground() {
+        ctx.drawImage(backgroundImage, 0, 0, canvas.width, canvas.height);
+    }
+
+    // Проверка столкновений
+    function checkCollisions() {
+        // Сбор артефакта
+        if (
+            !artifact.collected &&
+            hero.x < artifact.x + artifact.width &&
+            hero.x + hero.width > artifact.x &&
+            hero.y < artifact.y + artifact.height &&
+            hero.y + hero.height > artifact.y
+        ) {
+            score++;
+            updateUI();
+            
+            // Очищаем старые платформы
+            clearOldPlatforms();
+            
+            artifact.respawn(); // артефакт появляется в новом месте
+        }
+
+        // Контакт с врагами
+        enemies.forEach(enemy => {
+            if (
+                hero.x < enemy.x + enemy.width &&
+                hero.x + hero.width > enemy.x &&
+                hero.y < enemy.y + enemy.height &&
+                hero.y + hero.height > enemy.y
+            ) {
+                lives--; // уменьшаем жизнь
+                updateUI(); // обновляем интерфейс
+                
+                // Возвращаем героя на стартовую позицию
+                hero.x = 100;
+                hero.y = canvas.height - 150;
+                hero.vy = 0;
+                hero.onGround = true;
+                hero.glideMode = false; // выключаем парение
+                hero.canDoubleJump = false;
+                
+                // Завершаем игру только после потери всех жизней
+                if (lives <= 0) {
+                    showGameOver();
+                }
+            }
+        });
+    }
+
+    // Показываем экран GAME OVER
+    function showGameOver() {
+        // Остановка игрового цикла
+        cancelAnimationFrame(requestID);
+        
+        // Показываем надпись GAME OVER
+        document.getElementById('gameOverScreen').style.display = 'flex';
+    }
+
+    // Основной игровой цикл
+    let requestID;
+    function gameLoop() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Рисуем фон
+        drawBackground();
+
+        // Герой движется
+        hero.update();
+        hero.draw();
+
+        // Враги движутся
+        enemies.forEach(enemy => {
+            enemy.update();
+            enemy.draw();
+        });
+
+        // Артефакт
+        artifact.draw();
+
+        // Рисуем платформы
+        platforms.forEach(platform => platform.draw());
+
+        // Проверка столкновений
+        checkCollisions();
+
+        requestID = requestAnimationFrame(gameLoop);
+    }
+
+    // Начинаем игру после загрузки изображений
+    let imagesLoaded = 0;
+
+    function startGameIfReady() {
+        imagesLoaded++;
+        console.log(`Загружено ${imagesLoaded}/3 изображения`);
+        if (imagesLoaded === 3) { // ожидаем 3 изображения
+            console.log("Все изображения загружены. Запускаем игру!");
+            gameLoop();
+        }
+    }
+
+    // Загрузка фона
+    backgroundImage.onload = () => {
+        console.log("Фон загружен");
+        startGameIfReady();
+    };
+
+    // Загрузка персонажа
+    heroImage.onload = () => {
+        console.log("Изображение персонажа загружено");
+        startGameIfReady();
+    };
+
+    // *** Загрузка скина для платформы ***
+    platformSkin.onload = () => {
+        console.log("Скин платформы загружен");
+        startGameIfReady();
+    };
+
+    // Инициализация интерфейса
+    updateUI();
+</script>
+</body>
+</html>
